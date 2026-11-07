@@ -66,15 +66,20 @@ CREATE DATABASE voxalearn;
 ---
 
 ### 3. Start Python AI Microservice (Port 8001)
+
+**On Windows (PowerShell):**
+```powershell
+cd backend
+.\venv\Scripts\Activate.ps1
+uvicorn app.main:app --host 127.0.0.1 --port 8001
+```
+
+*(Or run directly without activation: `.\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8001`)*
+
+**On Linux / macOS:**
 ```bash
 cd backend
-python -m venv venv
-# Windows:
-.\venv\Scripts\activate
-# Linux/macOS:
 source venv/bin/activate
-
-pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
@@ -108,3 +113,4 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 - **HMAC-SHA256 JWT tokens** with role and user context verification.
 - **Service-to-Service Protection**: Python microservice requires `X-Internal-Service-Key` and verified `X-User-Id`; direct frontend access is rejected with `403 Forbidden`.
 - **Zero Frontend Trust**: Frontend client never communicates directly with internal AI processes or database instances.
+
