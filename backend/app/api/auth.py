@@ -1,44 +1,90 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
-from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
-from datetime import timedelta, datetime
-import uuid
 import secrets
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
 
-from app.database.database import get_db
-from app.models.user import User, UserProfile
-from app.schemas.user import UserCreate, UserResponse, Token, EmailRequest, PasswordResetRequest
-from app.services.auth import get_password_hash, verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
-from app.api.dependencies import get_current_user
+from app.database.connection import get_db
+from app.models.user import User
+from app.models.profile import UserProfile, LearningProfile
+from app.schemas.user import (
+    UserCreate, UserResponse, Token, TokenData,
+    SelectAccountTypeRequest, ForgotPasswordRequest, ResetPasswordRequest
+)
+from app.services.auth import (
+    verify_password, get_password_hash, create_access_token,
+    SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+)
 
-router = APIRouter()
+router = APIRouter(prefix="/auth", tags=["auth"])
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        token_data = TokenData(email=email)
+    except JWTError:
+        raise credentials_exception
+    
+    result = await db.execute(select(User).filter(User.email == token_data.email))
+    user = result.scalars().first()
+    if user is None:
+        raise credentials_exception
+    return user
 
 @router.post("/register", response_model=UserResponse)
-def register_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user.email).first()
-    if db_user:
+async def register(user: UserCreate, db: AsyncSession = Depends(get_db)):
+    if user.confirm_password and user.password != user.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    
+    result = await db.execute(select(User).filter(User.email == user.email))
+    if result.scalars().first():
         raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_password = get_password_hash(user.password)
-    new_user = User(email=user.email, hashed_password=hashed_password)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    db_user = User(
+        email=user.email,
+        password_hash=hashed_password,
+        account_type=None,
+        is_verified=True,
+        profile_completed=False,
+        first_time_login=True
+    )
+    db.add(db_user)
+    await db.flush()
 
-    # Create profile
-    profile = UserProfile(user_id=new_user.id, first_name=user.first_name, last_name=user.last_name)
-    db.add(profile)
-    db.commit()
+    # Create baseline UserProfile if name was provided
+    display_name = user.name or user.email.split("@")[0].capitalize()
+    db_profile = UserProfile(
+        user_id=db_user.id,
+        name=display_name,
+        preferred_name=display_name,
+        native_language="English",
+        english_level="Intermediate",
+        learning_goal="Master software and research skills"
+    )
+    db.add(db_profile)
+    db.add(LearningProfile(user_id=db_user.id))
 
-    # In a real app, generate verification token and send email here
-    print(f"Mock Email: Verification link sent to {user.email}")
+    await db.commit()
+    await db.refresh(db_user)
+    return db_user
 
-    return new_user
-
-@router.post("/login", response_model=UserResponse)
-def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
+@router.post("/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).filter(User.email == form_data.username))
+    user = result.scalars().first()
+    if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -50,51 +96,79 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
         data={"sub": user.email}, expires_delta=access_token_expires
     )
     
-    # Set HttpOnly Cookie
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=False, # Set to True in production with HTTPS
-    )
-
-    # Update last login
-    user.last_login_at = datetime.utcnow()
-    db.commit()
-    db.refresh(user)
-
-    return user
-
-@router.post("/logout")
-def logout(response: Response):
-    response.delete_cookie("access_token")
-    return {"message": "Logged out successfully"}
+    user_resp = UserResponse.from_orm(user)
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user_resp
+    }
 
 @router.get("/me", response_model=UserResponse)
-def get_me(current_user: User = Depends(get_current_user)):
+async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
-@router.post("/verify-email")
-def verify_email(token: str, db: Session = Depends(get_db)):
-    # Mock implementation
-    # In real app, look up user by verification token, set email_verified=True
-    return {"message": "Email verified successfully"}
+@router.post("/select-account-type")
+async def select_account_type(
+    req: SelectAccountTypeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    valid_types = ["student", "teacher", "professional", "other"]
+    normalized = req.account_type.lower()
+    if normalized not in valid_types:
+        raise HTTPException(status_code=400, detail=f"Invalid account type. Choose from {valid_types}")
+    
+    current_user.account_type = normalized
+    current_user.first_time_login = False
+    await db.commit()
+    await db.refresh(current_user)
+    return {
+        "message": f"Account type updated to {normalized}",
+        "account_type": current_user.account_type,
+        "profile_completed": current_user.profile_completed
+    }
 
 @router.post("/forgot-password")
-def forgot_password(request: EmailRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == request.email).first()
-    if user:
-        # Generate token, save to db, send email
-        reset_token = secrets.token_urlsafe(32)
-        print(f"Mock Email: Password reset token for {request.email} is {reset_token}")
+async def forgot_password(req: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).filter(User.email == req.email))
+    user = result.scalars().first()
+    if not user:
+        # Avoid user enumeration in public API
+        return {"message": "If this email is registered, a password reset link has been dispatched."}
     
-    # Always return success to prevent email enumeration
-    return {"message": "If an account exists for this email, you will receive a password reset link."}
+    reset_token = secrets.token_urlsafe(32)
+    user.reset_password_token = reset_token
+    user.reset_token_expiry = datetime.utcnow() + timedelta(hours=2)
+    await db.commit()
+
+    return {
+        "message": "If this email is registered, a password reset link has been dispatched.",
+        "reset_token_preview": reset_token # Provided for dev convenience
+    }
 
 @router.post("/reset-password")
-def reset_password(request: PasswordResetRequest, db: Session = Depends(get_db)):
-    # Mock implementation: Accept any token and just reset for the email provided implicitly?
-    # No, we'd normally look up by token. Let's just mock a success message for MVP.
-    return {"message": "Password reset successfully"}
+async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    if req.confirm_password and req.new_password != req.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    
+    result = await db.execute(select(User).filter(User.reset_password_token == req.token))
+    user = result.scalars().first()
+    if not user or not user.reset_token_expiry or user.reset_token_expiry < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    
+    user.password_hash = get_password_hash(req.new_password)
+    user.reset_password_token = None
+    user.reset_token_expiry = None
+    await db.commit()
+    return {"message": "Password successfully reset. You may now log in with your new credentials."}
+
+@router.get("/status")
+async def get_user_status(current_user: User = Depends(get_current_user)):
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "account_type": current_user.account_type,
+        "is_verified": current_user.is_verified,
+        "profile_completed": current_user.profile_completed,
+        "first_time_login": current_user.first_time_login
+    }

@@ -1,25 +1,24 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from uuid import UUID
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 class UserBase(BaseModel):
-    email: EmailStr
+    email: str
 
 class UserCreate(UserBase):
+    name: Optional[str] = None
     password: str
-    first_name: str
-    last_name: Optional[str] = None
-
-from app.schemas.profile import UserProfileResponse
+    confirm_password: Optional[str] = None
 
 class UserResponse(UserBase):
     id: UUID
-    email_verified: bool
-    account_status: str
+    account_type: Optional[str] = None
+    is_verified: bool = True
+    profile_completed: bool = False
+    first_time_login: bool = True
     created_at: datetime
-    last_login_at: Optional[datetime] = None
-    profile: Optional[UserProfileResponse] = None
+    updated_at: datetime
 
     class Config:
         from_attributes = True
@@ -27,13 +26,18 @@ class UserResponse(UserBase):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    user: Optional[UserResponse] = None
 
 class TokenData(BaseModel):
     email: Optional[str] = None
 
-class EmailRequest(BaseModel):
-    email: EmailStr
+class SelectAccountTypeRequest(BaseModel):
+    account_type: str # "student", "teacher", "professional"
 
-class PasswordResetRequest(BaseModel):
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
+    confirm_password: Optional[str] = None

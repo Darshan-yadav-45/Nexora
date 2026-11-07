@@ -1,57 +1,76 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import Landing from './pages/Landing';
-import Login from './pages/Auth/Login';
-import Register from './pages/Auth/Register';
-import VerifyEmail from './pages/Auth/VerifyEmail';
-import ForgotPassword from './pages/Auth/ForgotPassword';
-import ResetPassword from './pages/Auth/ResetPassword';
-import ProfileSetup from './pages/Onboarding/ProfileSetup';
+import { useState, useEffect } from 'react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import Navbar from './components/Navbar';
+import AuthModal from './components/AuthModal';
+import Home from './pages/Home';
+import Onboarding from './pages/Onboarding';
 import Dashboard from './pages/Dashboard';
-import MyInformation from './pages/Profile/MyInformation';
-import Security from './pages/Settings/Security';
-import ResearchWorkspace from './pages/Research/ResearchWorkspace';
-import ProjectDetails from './pages/Research/ProjectDetails';
-
-const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const { user, loading } = useAuth();
-  
-  if (loading) {
-    return <div className="min-h-screen flex items-center justify-center bg-gray-900 text-white">Loading...</div>;
-  }
-  
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
-  
-  return <>{children}</>;
-};
+import Career from './pages/Career';
+import Research from './pages/Research';
+import Planner from './pages/Planner';
+import KnowledgeBase from './pages/KnowledgeBase';
+import Profile from './pages/Profile';
 
 function App() {
-  return (
-    <AuthProvider>
-      <Router>
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/verify-email" element={<VerifyEmail />} />
-          <Route path="/forgot-password" element={<ForgotPassword />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
+  const navigate = useNavigate();
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
 
-          <Route path="/onboarding" element={<ProtectedRoute><ProfileSetup /></ProtectedRoute>} />
-          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-          <Route path="/profile" element={<ProtectedRoute><MyInformation /></ProtectedRoute>} />
-          <Route path="/settings/security" element={<ProtectedRoute><Security /></ProtectedRoute>} />
-          
-          {/* Research Module */}
-          <Route path="/research" element={<ProtectedRoute><ResearchWorkspace /></ProtectedRoute>} />
-          <Route path="/research/:projectId" element={<ProtectedRoute><ProjectDetails /></ProtectedRoute>} />
+  useEffect(() => {
+    const savedEmail = localStorage.getItem('userEmail');
+    const token = localStorage.getItem('token');
+    if (savedEmail && token) {
+      setUserEmail(savedEmail);
+    }
+  }, []);
+
+  const handleLoginSuccess = (email: string, isFirstTime: boolean) => {
+    setUserEmail(email);
+    setAuthModalOpen(false);
+    if (isFirstTime) {
+      navigate('/onboarding');
+    } else {
+      navigate('/dashboard');
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('userEmail');
+    localStorage.removeItem('accountType');
+    localStorage.removeItem('profileCompleted');
+    setUserEmail(null);
+    navigate('/');
+  };
+
+  return (
+    <div className="min-h-screen bg-dark-bg text-gray-100 flex flex-col selection:bg-primary-500/30">
+      <Navbar
+        userEmail={userEmail}
+        onOpenAuth={() => setAuthModalOpen(true)}
+        onLogout={handleLogout}
+      />
+
+      <main className="flex-1 w-full px-4 sm:px-6 lg:px-8 py-6">
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/onboarding" element={<Onboarding />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/career" element={<Career />} />
+          <Route path="/research" element={<Research />} />
+          <Route path="/planner" element={<Planner />} />
+          <Route path="/knowledge-base" element={<KnowledgeBase />} />
+          <Route path="/profile" element={<Profile />} />
         </Routes>
-      </Router>
-    </AuthProvider>
+      </main>
+
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onSuccess={handleLoginSuccess}
+      />
+    </div>
   );
 }
 
 export default App;
-
